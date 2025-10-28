@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from logging.handlers import TimedRotatingFileHandler
 from typing import Any, Dict, Optional
+import sys
 
 import requests
 
@@ -15,7 +16,7 @@ BOT_TOKEN = "8242825417:AAHS5y43tAG5KV3Btadx1Kvz7nRXvFkFyAg"
 URL_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 POLL_TIMEOUT = 30          # long polling
-SLEEP_BETWEEN_POLLS = 2    # para no ciclar fuerte
+SLEEP_BETWEEN_POLLS = 4    # para no ciclar fuerte
 SESSION_TTL_SECS = 180     # ⏳ duración de la ventana (ajustá a gusto)
 
 MISSION_DURATION = 12 * 60
@@ -111,7 +112,7 @@ offset = 0  # Para no procesar mensajes viejos
 
 
 # ================== Helpers de API ==================
-def get_updates(offset_value: int):
+def get_updates(chat_id: int, offset_value: int):
     try:
         url = f"{URL_BASE}getUpdates?timeout={POLL_TIMEOUT}&offset={offset_value}"
         r = requests.get(url, timeout=POLL_TIMEOUT + 5)
@@ -120,9 +121,17 @@ def get_updates(offset_value: int):
         if result:
             log_operation("Actualizaciones recibidas", total=len(result))
         return result
-    except requests.RequestException as e:
-        log_error("Error al obtener actualizaciones", error=str(e))
-        return []
+    except requests.exceptions.HTTPError as e:
+        if r.status_code == 409:
+            log_error("Error 409: Bot Activo en Otra Instancia", error=str(e))
+        else:
+            log_error("Error HTTP inesperado", error=str(e))
+    except Exception as e:
+        log_error("Error General", error=str(e))
+    send_message(
+        chat_id, "Se ha Producido un Error interno en el Bot. Contactar con Soporte.")
+    sys.exit(1)
+        
 
 
 def send_message(chat_id: int, text: str, reply_markup: Optional[Dict[str, Any]] = None):
