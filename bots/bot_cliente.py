@@ -1,15 +1,13 @@
 import json
-import logging
-import os
 import time
 from datetime import datetime, timedelta, timezone
-from logging.handlers import TimedRotatingFileHandler
 from typing import Any, Dict, Optional
 import sys
 
 import requests
 
 import jsonsender
+from utils.logger import log_error, log_operation
 
 # ================== Config ==================
 BOT_TOKEN = "8242825417:AAHS5y43tAG5KV3Btadx1Kvz7nRXvFkFyAg"
@@ -24,86 +22,17 @@ mission_running = False
 mission_start_time = 0.0
 current_mission_name: Optional[str] = None
 
-# ================== Logging ==================
-LOG_DIR = "logs"
+
+# ================== Logging helpers ==================
+
+def client_log_operation(message: str, **context: Any) -> None:
+    log_operation(f"[ClientBot] {message}", **context)
 
 
-class MaxLevelFilter(logging.Filter):
-    def __init__(self, max_level: int):
-        super().__init__()
-        self.max_level = max_level
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return record.levelno <= self.max_level
+def client_log_error(message: str, **context: Any) -> None:
+    log_error(f"[ClientBot] {message}", **context)
 
 
-def configure_logging() -> logging.Logger:
-    os.makedirs(LOG_DIR, exist_ok=True)
-
-    logger = logging.getLogger("flytbase_bot")
-    if logger.handlers:
-        return logger
-
-    logger.setLevel(logging.INFO)
-
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(message)s", "%Y-%m-%d %H:%M:%S"
-    )
-
-    info_handler = TimedRotatingFileHandler(
-        filename=os.path.join(LOG_DIR, "operations.log"),
-        when="midnight",
-        backupCount=14,
-        encoding="utf-8",
-    )
-    info_handler.setLevel(logging.INFO)
-    info_handler.addFilter(MaxLevelFilter(logging.WARNING))
-    info_handler.setFormatter(formatter)
-
-    error_handler = TimedRotatingFileHandler(
-        filename=os.path.join(LOG_DIR, "errors.log"),
-        when="midnight",
-        backupCount=30,
-        encoding="utf-8",
-    )
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(formatter)
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.INFO)
-    stream_handler.setFormatter(formatter)
-
-    logger.addHandler(info_handler)
-    logger.addHandler(error_handler)
-    logger.addHandler(stream_handler)
-
-    return logger
-
-
-def scrub_sensitive(data: Any) -> Any:
-    """Pequeña ayuda para limitar fugas de información sensible en logs."""
-    if isinstance(data, dict):
-        return {k: ("***" if "token" in k.lower() else scrub_sensitive(v)) for k, v in data.items()}
-    if isinstance(data, list):
-        return [scrub_sensitive(item) for item in data]
-    return data
-
-
-def log_operation(message: str, **context: Any) -> None:
-    if context:
-        logger.info("%s | %s", message, json.dumps(scrub_sensitive(context), ensure_ascii=False))
-    else:
-        logger.info(message)
-
-
-def log_error(message: str, **context: Any) -> None:
-    if context:
-        logger.error("%s | %s", message, json.dumps(scrub_sensitive(context), ensure_ascii=False))
-    else:
-        logger.error(message)
-
-
-logger = configure_logging()
 
 # ================== Estado en memoria ==================
 # sessions[chat_id] = {"started_at": datetime, "expires_at": datetime, "user_name": str}
@@ -119,15 +48,15 @@ def get_updates(chat_id: int, offset_value: int):
         r.raise_for_status()
         result = r.json().get("result", [])
         if result:
-            log_operation("Actualizaciones recibidas", total=len(result))
+            client_log_operation("Actualizaciones recibidas", total=len(result))
         return result
     except requests.exceptions.HTTPError as e:
         if r.status_code == 409:
-            log_error("Error 409: Bot Activo en Otra Instancia", error=str(e))
+            client_log_error("Error 409: Bot Activo en Otra Instancia", error=str(e))
         else:
-            log_error("Error HTTP inesperado", error=str(e))
+            client_log_error("Error HTTP inesperado", error=str(e))
     except Exception as e:
-        log_error("Error General", error=str(e))
+        client_log_error("Error General", error=str(e))
     send_message(
         chat_id, "Se ha Producido un Error interno en el Bot. Contactar con Soporte.")
     sys.exit(1)
@@ -143,7 +72,7 @@ def send_message(chat_id: int, text: str, reply_markup: Optional[Dict[str, Any]]
         r = requests.post(url, data=data, timeout=10)
         r.raise_for_status()
     except requests.RequestException as e:
-        log_error("Error al enviar mensaje", chat_id=chat_id, error=str(e), payload=text)
+        client_log_error("Error al enviar mensaje", chat_id=chat_id, error=str(e), payload=text)
 
 
 def remove_keyboard(chat_id: int, text: str = "Ventana cerrada. Escribí 'hola' para empezar de nuevo."):
@@ -176,12 +105,12 @@ def start_session(chat_id: int, user_name: str) -> None:
         "expires_at": now() + timedelta(seconds=SESSION_TTL_SECS),
         "user_name": user_name,
     }
-    log_operation("Sesión iniciada", chat_id=chat_id, user_name=user_name)
+    client_log_operation("Sesión iniciada", chat_id=chat_id, user_name=user_name)
 
 
 def end_session(chat_id: int) -> None:
     session = sessions.pop(chat_id, None)
-    log_operation("Sesión finalizada", chat_id=chat_id, duration_seconds=int((now() - session["started_at"]).total_seconds()) if session else None)
+    client_log_operation("Sesión finalizada", chat_id=chat_id, duration_seconds=int((now() - session["started_at"]).total_seconds()) if session else None)
 
 
 # ================== UI: Menú ==================
@@ -220,7 +149,7 @@ def update_mission_state():
     if mission_running:
         elapsed = time.time() - mission_start_time
         if elapsed >= MISSION_DURATION:
-            log_operation(
+            client_log_operation(
                 "Misión completada por duración programada",
                 mission=current_mission_name,
                 elapsed_seconds=int(elapsed),
@@ -302,7 +231,7 @@ def handle_mision1(chat_id: int):
                     f"Vuelve a intentarlo en {minutes} min {seconds} s."
                 ),
             )
-            log_operation(
+            client_log_operation(
                 "Intento de envío mientras misión activa",
                 chat_id=chat_id,
                 remaining_seconds=remaining,
@@ -316,7 +245,7 @@ def handle_mision1(chat_id: int):
         mission_start_time = time.time()
         current_mission_name = "mision1"
 
-        log_operation(
+        client_log_operation(
             "Misión enviada correctamente",
             chat_id=chat_id,
             mission=current_mission_name,
@@ -332,7 +261,7 @@ def handle_mision1(chat_id: int):
         )
 
     except requests.exceptions.RequestException as e:
-        log_error(
+        client_log_error(
             "Error de comunicación con FlytBase",
             chat_id=chat_id,
             mission="mision1",
@@ -346,7 +275,7 @@ def handle_mision1(chat_id: int):
             ),
         )
     except Exception as e:
-        log_error(
+        client_log_error(
             "Error inesperado al procesar misión",
             chat_id=chat_id,
             mission="mision1",
@@ -368,14 +297,14 @@ def handle_estado(chat_id: int):
 
     touch_session(chat_id)
     status_message = format_mission_status()
-    log_operation("Consulta de estado", chat_id=chat_id, status=status_message)
+    client_log_operation("Consulta de estado", chat_id=chat_id, status=status_message)
     send_message(chat_id, status_message)
 
 
 def handle_cerrar(chat_id: int):
     if is_session_active(chat_id):
         end_session(chat_id)
-    log_operation("Cierre de sesión solicitado", chat_id=chat_id)
+    client_log_operation("Cierre de sesión solicitado", chat_id=chat_id)
     remove_keyboard(chat_id)
 
 
@@ -405,17 +334,17 @@ def clear_pending_updates():
         data = r.json().get("result", [])
         if data:
             offset = data[-1]["update_id"] + 1
-            log_operation("Ignorando mensajes previos al arranque", total=len(data))
+            client_log_operation("Ignorando mensajes previos al arranque", total=len(data))
         else:
-            log_operation("No hay mensajes pendientes al inicio")
+            client_log_operation("No hay mensajes pendientes al inicio")
     except Exception as e:
-        log_error("Error al limpiar mensajes pendientes", error=str(e))
+        client_log_error("Error al limpiar mensajes pendientes", error=str(e))
 
 
 # ================== Loop principal ==================
 def main():
     global offset
-    log_operation("Bot iniciado con ventanas de conversación y control de misión…")
+    client_log_operation("Bot iniciado con ventanas de conversación y control de misión…")
 
     clear_pending_updates()
 
